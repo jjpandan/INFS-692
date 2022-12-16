@@ -1,0 +1,305 @@
+---
+title: "STATISTICAL COMPUTING FINAL PROJECT"
+author: "Jobert Jay R. Pandan"
+date: "2022-12-13"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MODEL 1: BAGGING MODEL
+
+Model 1 used these three classification ensembles models: 
+* Bagging Model
+* Gradient Boosting Model
+* Stacking Model
+
+__Libraries Needed for Pre-processing__
+
+```{r, warning=FALSE, message=FALSE}
+library(readr) 
+library(dplyr)
+library(ggplot2) # for plotting
+library(caret) # pre-processing and modeling
+library(corrplot)
+library(fastDummies) # for creating dummy variables
+pacman::p_load(tidyverse)
+pacman::p_load(bestNormalize)
+```
+
+### DATA ACQUISITION AND PRE-PROCESSING
+
+
+__Dataset__
+
+_radiomics_completedata.csv_ data was used for this project. The data has a 431 variables and 197 observations including _Failure.binary_ as our target/response/outcome variable with its 430 predictors/features/independent variables. _Failure.binary_ is a binary variable with 1 and 0 as its values. 
+
+```{r}
+radiomics = read.csv("radiomics_completedata.csv")
+head(radiomics)
+```
+
+__Data description__
+
+
+```{r}
+str(radiomics[1:10])
+```
+
+Variables _Institution_ and _Failure.binary_ needs to change its datatype into factors. `Institution` was re-coded into dummy variables 
+
+```{r}
+newdf = dummy_cols(radiomics, select_columns = "Institution" )
+newdf = newdf[,-1]
+str(newdf[431:434])
+```
+
+```{r}
+newdf$Institution_A = as.factor(newdf$Institution_A)
+newdf$Institution_B = as.factor(newdf$Institution_B)
+newdf$Institution_C = as.factor(newdf$Institution_C)
+newdf$Institution_D = as.factor(newdf$Institution_D)
+newdf$Failure.binary = as.factor(newdf$Failure.binary)
+str(newdf[1])
+```
+
+
+__Null Values__
+
+```{r}
+sum(is.na(newdf))
+```
+No null values found in the data.
+
+
+__Normality of the data__
+
+To check the normality of the data, we used Shapiro-wilk test.
+
+SHAPIRO-WILK TEST OF NORMALITY
+H_o = Data is normally distributed
+H_i = Data is not normally distributed
+
+```{r}
+lshap <- lapply(newdf[2:430], shapiro.test) #applying shapiro-wilk test of normality to the data frame
+l = 1:429
+for (i in l) { # 
+  x = lshap[[i]]$p.value
+  z= 1 +i
+  if (lshap[[i]]$p.value >= 0.05){
+    print(paste(x, "p-value for",colnames(newdf[z]) ))
+ }
+}
+```
+
+Upon checking its normality, only the _Entropy_cooc.W.ADC_ has p-value of 0.135 which tells that it follows normal distribution,the rest of the variables do not follow normal distribution. Transformation is required to the data to address the non-normality of the data. In this project we use _Ordered Quantile (ORQ) normalization transformation_ to  normalize the data.
+
+```{r, warning=FALSE}
+newdf1 = newdf %>% select_if(is.numeric)
+tempDF=apply(newdf1,2,orderNorm)
+tempDF=lapply(tempDF, function(x) x$x.t)
+tempDF=tempDF%>%as.data.frame()
+norm_data = cbind(newdf[c('Failure.binary','Institution_A','Institution_B','Institution_C','Institution_D')], tempDF)
+```
+
+
+Testing the normality of the data using the normalize data using __Ordered Quantile (ORQ) normalization transformation__.
+
+```{r}
+lshap <- lapply(tempDF, shapiro.test) #applying shapiro-wilk test of normality to the data frame
+l = 1:429
+for (i in l) { # 
+  x = lshap[[i]]$p.value
+  z= 1 +i
+  if (lshap[[i]]$p.value <= 0.05){
+    print(paste(x, "p-value for",colnames(newdf[z]) ))
+ } 
+}
+
+```
+Since all p-values are greater than 0.05 then we cannot reject the null hypothesis that the data by this time follows Normal distribution.
+
+__Correlation__
+
+Checking the correlation of the data. By assumption that highly correlated data does not do good in model making, thus by removing this will improve the performance of our model. But in this project, removing highy correlated columns is not considered.
+
+```{r,echo=FALSE}
+
+corMatrix =  round(cor(tempDF, method = "pearson"), 2)
+highly_correlated_columns = findCorrelation(
+  corMatrix,
+  cutoff = 0.90, # correlation coefficient
+  verbose = FALSE,
+  names = FALSE,
+  exact = TRUE
+)
+
+```
+
+```{r}
+heatmap(corMatrix)
+#ggcorrplot(corr <= 0.40 ,colors =  c("blue", "white","red"), ggtheme=theme_bw, lab = FALSE, title = "Correlogram of") 
+```
+
+
+
+
+__Data Splitting__
+
+After pre-processing, we now split our data into 80% for training and 20% for testing.
+* __Training:__ our training dataset has a 158 observations
+* __Testing:__ our testing dataset has a 39 observations
+
+```{r}
+set.seed(3333)
+trainIndex <- createDataPartition(norm_data$Failure.binary, p = .80, 
+                                  list = FALSE, 
+                                  times = 1)
+finaldata_train<- norm_data[ trainIndex,]
+finaldata_test<- norm_data[-trainIndex,]
+dim(finaldata_train) ; dim(finaldata_test)
+```
+
+### DATA MODELING
+
+__Libraries Needed for Modeling__
+
+```{r, message=FALSE}
+library(rpart)       # for fitting decision trees
+library(ipred)       # for fitting bagged decision trees
+library(doParallel)  # for parallel backend to foreach
+library(foreach)     # for parallel processing with for loops
+
+```
+
+__Bagging Model__
+
+1. This model uses  bagging() function form `ipred` package. In this model we used 100 iterations to create 100 bootstrapped samples.
+
+```{r}
+bagging_1 <- bagging(
+  formula = Failure.binary ~ .,
+  data = finaldata_train,
+  nbagg = 100,  # number of iteration to be included in the model.
+  coob = TRUE, # OOB error rate
+  control = rpart.control(minsplit = 2, cp = 0)
+)
+
+bagging_1
+```
+
+From the output above, we obtain the Out-of-bag estimate of misclassification error of 0.1203. This means that model bagging_1 has a tendency of 12%  misclassifying error in classifying the `Failure.binary` variable.
+
+2. This model applied bagging from caret package with 10-fold cross-validation. The model has an accuracy of 0.875 which is good enough.
+```{r}
+bagging_2 <- train(
+  Failure.binary ~ .,
+  data = finaldata_train,
+  method = "treebag",
+  trControl = trainControl(method = "cv", number = 10),
+  nbagg = 200,  
+  control = rpart.control(minsplit = 2, cp = 0)
+)
+
+bagging_2
+```
+
+The model has accuracy of 88% in classifying the `Failure.binary` variable. To choose the best model we try to test the models performance on test set. 
+
+
+
+```{r}
+library(performance)
+library(ROCR)
+library(pROC)
+# Compute predicted probabilities on training data
+m1_prob <- predict(bagging_1, finaldata_test, type = "prob")[,2]
+
+# Compute AUC metrics for cv_model1,2 and 3 
+perf1 <- prediction(m1_prob,finaldata_test$Failure.binary) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+
+# Plot ROC curves for cv_model1,2 and 3 
+plot(perf1, col = "black", lty = 2)
+
+
+# ROC plot for training data
+roc( finaldata_test$Failure.binary ~ m1_prob, plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+
+
+
+```
+
+Testing our model bagging_1 to the testing set is helpful to determine the performance of our model and its sensitivity and specificity. The model has an AUC of 91.1%, which means it is a better model with 91.1% of the time the model will correctly clasify a random case.
+ 
+```{r}
+# Compute predicted probabilities on training data
+m1_prob <- predict(bagging_2, finaldata_test, type = "prob")[,2]
+
+# Compute AUC metrics for cv_model1,2 and 3 
+perf1 <- prediction(m1_prob,finaldata_test$Failure.binary) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+
+# Plot ROC curves for cv_model1,2 and 3 
+plot(perf1, col = "black", lty = 2)
+
+
+# ROC plot for training data
+roc( finaldata_test$Failure.binary ~ m1_prob, plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+
+```
+
+Plotting the performance of the model bagging_2 will help us to tell how our model performed in predicting the target variable (Failure.binary). We test the performance of the model on the training set and found out that the model performed well on our testing set with 0.5% higher than the AUC of previous model, thus we can conclude that model bagging_2 is our final model in bagging. 
+
+Checking it on confusion matrix,
+
+```{r}
+predictions = predict(bagging_2, newdata = finaldata_test)
+confusionMatrix(data = finaldata_test$Failure.binary,predictions )
+```
+
+According to confusion matrix, 23 of the predicted `0` is correctly classified by the model and 11 of the predicted `1` are classified correctly by the model only 5 were misclassified.
+
+
+```{r}
+vip::vip(bagging_2, num_features = 40)
+```
+
+Based on model bagging_2, Entropy_cooc.W.ADC, Failure and GLNU_align.H.PET are the top important variables that helps the model to make an accurate prediction on the classification of any random case inputted in the model.
+
+```{r}
+p1 <- pdp::partial(
+  bagging_2, 
+  pred.var = "Entropy_cooc.W.ADC",
+  grid.resolution = 20
+  ) %>% 
+  autoplot()
+
+p2 <- pdp::partial(
+  bagging_2, 
+  pred.var = "Failure", 
+  grid.resolution = 20
+  ) %>% 
+  autoplot()
+
+
+p3 = pdp::partial(
+  bagging_2, 
+  pred.var = "GLNU_align.H.PET", 
+  grid.resolution = 20
+  ) %>% 
+  autoplot()
+
+
+gridExtra::grid.arrange(p1, p2, p3, nrow = 2)
+```
+
+The partial dependence plot shows the dependence between the Failure.binary response/target variable and these top 3 feature variables (i.e. Failure, GLNU_align.H.PET and Entropy-cooc.W.ADC.  of interest. As shown in PDP above, lower Entropy.cooc.W.ADC implies that Failure.binary is more likely to be 1, the higher the Entropy_cooc.W.ADC the more likely the `Failure.binary` to be 0,and the lower the failure the more likely the Final.binary to be 0.
+
+

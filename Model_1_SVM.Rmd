@@ -1,0 +1,281 @@
+---
+title: "STATISTICAL COMPUTING FINAL PROJECT"
+author: "Jobert Jay R. Pandan"
+date: "2022-12-13"
+output: pdf_document
+---
+
+# MODEL 1: SVM MODEL
+
+
+__Libraries Needed for Pre-processing__
+
+```{r, warning=FALSE, message=FALSE}
+library(readr) 
+library(dplyr)
+library(ggplot2) # for plotting
+library(caret) # pre-processing and modeling
+library(corrplot)
+library(fastDummies) # for creating dummy variables
+pacman::p_load(tidyverse)
+pacman::p_load(bestNormalize)
+
+# Modeling packages
+library(caret)    # for classification and regression training
+library(kernlab)  # for fitting SVMs
+library(modeldata) #for Failure.binary data
+library(forcats)
+
+# Model interpretability packages
+library(pdp)      # for partial dependence plots, etc.
+library(vip)      # for variable importance plots
+```
+
+
+### DATA ACQUISITION AND PRE-PROCESSING
+
+
+__Dataset__
+
+_radiomics_completedata.csv_ data was used for this project. The data has a 431 variables and 197 observations including _Failure.binary_ as our target/response/outcome variable with its 430 predictors/features/independent variables. _Failure.binary_ is a binary variable with 1 and 0 as its values. 
+
+```{r}
+radiomics = read.csv("radiomics_completedata.csv")
+```
+
+__Data description__
+
+
+
+Variables _Institution_ and _Failure.binary_ needs to change its datatype into factors. `Institution` was re-coded into dummy variables 
+
+```{r}
+newdf = dummy_cols(radiomics, select_columns = "Institution" )
+newdf = newdf[,-1]
+str(newdf[431:434])
+```
+
+```{r}
+newdf$Institution_A = as.factor(newdf$Institution_A)
+newdf$Institution_B = as.factor(newdf$Institution_B)
+newdf$Institution_C = as.factor(newdf$Institution_C)
+newdf$Institution_D = as.factor(newdf$Institution_D)
+newdf$Failure.binary = as.factor(newdf$Failure.binary)
+str(newdf[1])
+```
+
+
+__Null Values__
+
+```{r}
+sum(is.na(newdf))
+```
+No null values found in the data.
+
+
+__Normality of the data__
+
+To check the normality of the data, we used Shapiro-wilk test.
+
+SHAPIRO-WILK TEST OF NORMALITY
+H_o = Data is normally distributed
+H_i = Data is not normally distributed
+
+```{r}
+lshap <- lapply(newdf[2:430], shapiro.test) #applying shapiro-wilk test of normality to the data frame
+l = 1:429
+for (i in l) { # 
+  x = lshap[[i]]$p.value
+  z= 1 +i
+  if (lshap[[i]]$p.value >= 0.05){
+    print(paste(x, "p-value for",colnames(newdf[z]) ))
+ }
+}
+```
+
+Upon checking its normality, only the _Entropy_cooc.W.ADC_ has p-value of 0.135 which tells that it follows normal distribution,the rest of the variables do not follow normal distribution. Transformation is required to the data to address the non-normality of the data. In this project we use _Ordered Quantile (ORQ) normalization transformation_ to  normalize the data.
+
+```{r, warning=FALSE}
+newdf1 = newdf %>% select_if(is.numeric)
+tempDF=apply(newdf1,2,orderNorm)
+tempDF=lapply(tempDF, function(x) x$x.t)
+tempDF=tempDF%>%as.data.frame()
+norm_data = cbind(newdf[c('Failure.binary','Institution_A','Institution_B','Institution_C','Institution_D')], tempDF)
+```
+
+
+Testing the normality of the data using the normalize data using __Ordered Quantile (ORQ) normalization transformation__.
+
+```{r}
+lshap <- lapply(tempDF, shapiro.test) #applying shapiro-wilk test of normality to the data frame
+l = 1:429
+for (i in l) { # 
+  x = lshap[[i]]$p.value
+  z= 1 +i
+  if (lshap[[i]]$p.value <= 0.05){
+    print(paste(x, "p-value for",colnames(newdf[z]) ))
+ } 
+}
+
+```
+Since all p-values are greater than 0.05 then we cannot reject the null hypothesis that the data by this time follows Normal distribution.
+
+__Correlation__
+
+Checking the correlation of the data. By assumption that highly correlated data does not do good in model making, thus by removing this will improve the performance of our model. But in this project, removing highy correlated columns is not considered.
+
+```{r,echo=FALSE}
+
+corMatrix =  round(cor(tempDF, method = "pearson"), 2)
+highly_correlated_columns = findCorrelation(
+  corMatrix,
+  cutoff = 0.90, # correlation coefficient
+  verbose = FALSE,
+  names = FALSE,
+  exact = TRUE
+)
+
+```
+
+```{r}
+heatmap(corMatrix)
+#ggcorrplot(corr <= 0.40 ,colors =  c("blue", "white","red"), ggtheme=theme_bw, lab = FALSE, title = "Correlogram of") 
+```
+
+
+
+
+__Data Splitting__
+
+After pre-processing, we now split our data into 80% for training and 20% for testing.
+* __Training:__ our training dataset has a 158 observations
+* __Testing:__ our testing dataset has a 39 observations
+
+```{r}
+set.seed(3333)
+trainIndex <- createDataPartition(norm_data$Failure.binary, p = .80, 
+                                  list = FALSE, 
+                                  times = 1)
+finaldata_train<- norm_data[ trainIndex,]
+finaldata_test<- norm_data[-trainIndex,]
+dim(finaldata_train) ; dim(finaldata_test)
+```
+## MODELING
+
+```{r}
+# Linear (i.e., soft margin classifier)
+caret::getModelInfo("svmLinear")$svmLinear$parameters
+
+# Polynomial kernel
+caret::getModelInfo("svmPoly")$svmPoly$parameters
+
+# Radial basis kernel
+caret::getModelInfo("svmRadial")$svmRadial$parameters
+```
+
+### Run SVM Model in Training phase
+
+Tuning and fitting SVM Model using __radial kernel__ to _finaldata_train_ with 10 cross-validation.
+
+```{r}
+set.seed(1854)  # for reproducibility
+model_svm1 <- train(
+  Failure.binary ~ ., 
+  data = finaldata_train,
+  method = "svmRadial",               
+  preProcess = c("center", "scale"),  
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+```
+
+Plot and print SVM model with with radial basis kernel.
+
+```{r}
+# Plot results
+ggplot(model_svm1) + theme_light()
+
+
+```
+
+Above plot is the accuracy obtained by level of cost, cost decides how much an SVM should be allowed to “bend” with the data. The plot suggest that 80% cross-validated accuracy is obtained 20-25 cost (low cost)
+
+
+
+Control parameter
+
+```{r}
+#class.weights = c("No" = 1, "Yes" = 10)
+
+# Control params for SVM
+ctrl <- trainControl(
+  method = "cv", 
+  number = 10, 
+  classProbs = TRUE,                 
+  summaryFunction = twoClassSummary  # also needed for AUC/ROC
+)
+
+finaldata_train$Failure.binary=fct_recode(finaldata_train$Failure.binary,No="0",Yes="1")
+
+```
+
+### Print the AUC values during Training
+
+```{r}
+# Tune an SVM
+set.seed(5628)  # for reproducibility
+model_svm1_auc <- train(
+  Failure.binary ~ ., 
+  data = finaldata_train,
+  method = "svmRadial",               
+  preProcess = c("center", "scale"),  
+  metric = "ROC",  # area under ROC curve (AUC)       
+  trControl = ctrl,
+  tuneLength = 10
+)
+
+# Print results
+model_svm1_auc$results
+confusionMatrix(model_svm1_auc)
+```
+
+Confusion Matrix shows that prediction capability of our model achieved 82.91% accuracy and only 17% are misclassified.
+
+### Print the Top 20 important features during Training
+
+```{r}
+pred.prob <- function(object, newdata) {
+  predict(object, newdata = newdata, type = "prob")[, "Yes"]
+}
+
+# Variable importance plot
+set.seed(2827)  # for reproducibility
+vip(model_svm1_auc, method = "permute", nsim = 5, train = finaldata_train, 
+    target = "Failure.binary", metric = "auc", reference_class = "Yes", 
+    pred_wrapper = pred.prob)
+```
+The top 3 most influential features in SVM model are __Entropy.cooc_W.ADC, Failure and Min_hist.PET__. Only in this model the _Min_hist.PET_ considered as part of top 3 influential feature compare to _bagging model_ and _Random Forest Model_.  
+
+### Print the AUC values during Testing
+
+```{r}
+finaldata_test$Failure.binary=fct_recode(finaldata_test$Failure.binary,No="0",Yes="1" )
+
+# Tune an SVM with radial 
+set.seed(5628)  # for reproducibility
+testing_svm1_auc <- train(
+  Failure.binary ~ ., 
+  data = finaldata_test,
+  method = "svmRadial",               
+  preProcess = c("center", "scale"),  
+  metric = "ROC",  # area under ROC curve (AUC)       
+  trControl = ctrl,
+  tuneLength = 10
+)
+
+# Print results
+testing_svm1_auc$results
+confusionMatrix(testing_svm1_auc)
+```
+
+Unfortunately SVM modelling cannot provide good accuracy in predicting the classification of random case, it only has an accuracy of 64.1%, which means that 64.1% of the time the model willproedict correctly the Failure.binary '0'and '1'.

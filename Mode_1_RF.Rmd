@@ -1,0 +1,199 @@
+---
+title: "DATA SCIENCE FINAL PROJECT"
+author: "Jobert Jay R. Pandan"
+date: "2022-12-16"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MODEL 1:RANDOM FOREST MODEL
+
+
+__Libraries Needed for Pre-processing__
+
+```{r, warning=FALSE, message=FALSE}
+library(readr) 
+library(dplyr)
+library(ggplot2) # for plotting
+library(caret) # pre-processing and modeling
+library(corrplot)
+library(fastDummies) # for creating dummy variables
+pacman::p_load(tidyverse)
+pacman::p_load(bestNormalize)
+
+##Modelling package
+
+library(ranger)   # a c++ implementation of random forest 
+library(h2o)      # a java-based implementation of random forest
+h2o.init()
+```
+
+### DATA ACQUISITION AND PRE-PROCESSING
+
+
+__Dataset__
+
+_radiomics_completedata.csv_ data was used for this project. The data has a 431 variables and 197 observations including _Failure.binary_ as our target/response/outcome variable with its 430 predictors/features/independent variables. _Failure.binary_ is a binary variable with 1 and 0 as its values. 
+
+```{r,warning=FALSE}
+radiomics = read.csv("radiomics_completedata.csv")
+newdf = dummy_cols(radiomics, select_columns = "Institution" )
+newdf = newdf[,-1]
+newdf$Institution_A = as.factor(newdf$Institution_A)
+newdf$Institution_B = as.factor(newdf$Institution_B)
+newdf$Institution_C = as.factor(newdf$Institution_C)
+newdf$Institution_D = as.factor(newdf$Institution_D)
+newdf$Failure.binary = as.factor(newdf$Failure.binary)
+str(newdf[1])
+newdf1 = newdf %>% select_if(is.numeric)
+tempDF=apply(newdf1,2,orderNorm)
+tempDF=lapply(tempDF, function(x) x$x.t)
+tempDF=tempDF%>%as.data.frame()
+norm_data = cbind(newdf[c('Failure.binary','Institution_A','Institution_B','Institution_C','Institution_D')], tempDF)
+```
+```{r}
+set.seed(3333)
+trainIndex <- createDataPartition(norm_data$Failure.binary, p = .80, 
+                                  list = FALSE, 
+                                  times = 1)
+finaldata_train<- norm_data[ trainIndex,]
+finaldata_test<- norm_data[-trainIndex,]
+```
+
+
+```{r}
+# train a default random forest model
+n_features <- length(setdiff(names(finaldata_train), "Failure.binary"))
+rf_mod1 <- ranger(
+  Failure.binary ~ ., 
+  data = finaldata_train,
+  mtry = floor(n_features / 3),
+  respect.unordered.factors = "order",
+  seed = 123
+)
+(default_rmse <- sqrt(rf_mod1$prediction.error))
+```
+
+This model uses the basic functions of modeling using ranger() in training the model. This model has an RMSE of 0.3375264 which will be our baseline model
+
+```{r}
+hyper_grid <- expand.grid(
+  mtry = floor(n_features * c(.05, .15, .25, .333, .4)),
+  min.node.size = c(1, 3, 5, 10), 
+  replace = c(TRUE, FALSE),                               
+  sample.fraction = c(.5, .63, .8),                       
+  rmse = NA                                               
+)
+
+# execute full cartesian grid search
+for(i in seq_len(nrow(hyper_grid))) {
+  # fit model for ith hyperparameter combination
+  rf_fit <- ranger(
+    formula         = Failure.binary ~ ., 
+    data            = finaldata_train, 
+    num.trees       = n_features * 10,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$min.node.size[i],
+    replace         = hyper_grid$replace[i],
+    sample.fraction = hyper_grid$sample.fraction[i],
+    verbose         = FALSE,
+    seed            = 123,
+    respect.unordered.factors = 'order',
+  )
+  # export OOB error 
+  hyper_grid$rmse[i] <- sqrt(rf_fit$prediction.error)
+}
+# assess top 10 models
+hyper_grid %>%
+  arrange(rmse) %>%
+  mutate(perc_gain = (default_rmse - rmse) / default_rmse * 100) %>%
+  head(10)
+
+```
+This model rf_fit uses ranger() with a hyperparameter grid shows the top 10 good-performing models with RMSE below 0.32900. Five of those models performed better than the baseline model with an RMSE of 0.3182229 and a model percentage gain of 5.7%.
+
+
+
+
+```{r, message=FALSE, warning=FALSE}
+
+h2o_datatraining <- as.h2o(finaldata_train)
+
+# set the response column to Failure.binary
+response <- "Failure.binary"
+
+# set the predictor names
+predictors <- setdiff(colnames(finaldata_train), response)
+
+h2o_rf1 <- h2o.randomForest(
+  x = predictors, 
+  y = response,
+  training_frame = h2o_datatraining, 
+  ntrees = n_features * 10,
+  seed = 123
+)
+
+h2o_rf1
+```
+h2o_rf1 model uses h2o() in training the model with an RMSE of 0.3723863 which means this model doen't provide gain percentage from the baseline model  Thus, the model rf_fit performed better than this model. 
+
+
+Therefore, rf_fit model is our final model. Testing the model performance we have,
+
+
+```{r}
+predictions = predict(rf_fit, data = finaldata_test)
+confusionMatrix(data = finaldata_test$Failure.binary, predictions$predictions )
+```
+
+The rf_fit model has an accuracy of 89.74%, looking at the confusion matrix, the model predicted `Failure.binary` 0 corrrectly with only 1 observation that is misclassified and 10 observation are correctly classified in `failure.binary` 1 with only 3 misclassified observation.
+
+It is important to determine the variables that are most influential in predicting accuracy of the model. Based on the figure below, we can say that:
+
+
+
+```{r}
+rf_impurity <- ranger(
+  formula = Failure.binary ~ ., 
+  data = finaldata_train, 
+  num.trees = 2000,
+  mtry = 32,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "impurity",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 123
+)
+```
+
+```{r}
+rf_permutation <- ranger(
+  formula = Failure.binary ~ ., 
+  data = finaldata_train, 
+  num.trees = 2000,
+  mtry = 32,
+  min.node.size = 1,
+  sample.fraction = .80,
+  replace = FALSE,
+  importance = "permutation",
+  respect.unordered.factors = "order",
+  verbose = FALSE,
+  seed  = 123
+)
+```
+
+```{r}
+p1 <- vip::vip(rf_impurity, num_features = 25, bar = FALSE)
+p2 <- vip::vip(rf_permutation, num_features = 25, bar = FALSE)
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+
+
+```
+Entropy_cooc.W.ADC, Failure and GLNU_align.H.PET are the variables that helps the model in predicting the classification correctly.
+

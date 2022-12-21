@@ -1,0 +1,151 @@
+---
+title: "DATA SCIENCE FINAL PROJECT"
+author: "Jobert Jay R. Pandan"
+date: "2022-12-17"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### MODEL 3
+__Comparison of three clustering techniques: K-Means Clustering, Heirarchecal Clustering and Model-based Clustering.__
+
+
+_Libraries needed for the modeling_
+
+```{r, warning=FALSE, message=FALSE}
+library(readr)
+library(dplyr)    
+library(ggplot2)   
+library(stringr)  
+library(cluster)    
+library(factoextra)
+library(gridExtra)  
+library(tidyverse)
+library(dplyr)
+pacman::p_load(tidyverse)
+pacman::p_load(bestNormalize)
+library(caret)
+library(mclust)
+library(fpc)
+```
+
+
+__Data Acquisition__
+
+Data used in this modeling is radiomics_completedata.csv.
+
+```{r}
+df = read.csv("radiomics_completedata.csv")
+```
+
+Since we all know that the data is not normal, we do some transfromation, similar in the previous models.
+
+```{r, warning=FALSE}
+df$Failure.binary = as.factor(df$Failure.binary)
+newdf1 = df %>% select_if(is.numeric)
+tempDF=apply(newdf1,2,orderNorm)
+tempDF=lapply(tempDF, function(x) x$x.t)
+tempDF=tempDF%>%as.data.frame()
+normalized = cbind(df[c('Failure.binary')], tempDF)
+```
+
+
+
+## K-Means Clustering
+
+```{r}
+kmeans(normalized, centers = 3, iter.max = 100, nstart = 100)
+clustering_kmeans <- kmeans(normalized, centers = 3, iter.max = 100, nstart = 100)
+```
+
+The three clusters are made which are 50, 103 and 44 and within the clusters the sum of square is 41.9% which tells the quality of partition.
+
+## Heirarchical Clustering
+```{r}
+data_heir <- normalized%>%
+  select(-Failure.binary) %>%    # remove target column
+  select_if(is.numeric) %>%  # select numeric columns
+  mutate_all(as.double) %>%  # coerce to double type
+  scale()
+newdata <- dist(data_heir, method = "euclidean")
+```
+
+
+Plot of dendogram:
+```{r}
+clustering_heir <- hclust(newdata, method = "complete")
+plot(clustering_heir, cex = 0.6)
+rect.hclust(clustering_heir, k = 2, border = 1:4)
+```
+
+Above is the heirarchy of clusters, where x-axis is the distance matrix and y-axis as height.
+
+```{r}
+clustering_heir
+```
+
+In creating the model, the clustering method is complete, the distance is euclidean and no, of objects are 197.
+
+## Model-based Clustering
+
+```{r}
+Clustering_mbased <- Mclust(normalized[,1:10], G=3) 
+summary(Clustering_mbased)
+```
+
+Model-based clustering with 3 components has size of 95, 44 and 58 witn Bayesian information Criteria of -1462.41.
+
+```{r}
+Clustering_mbased1 <- Mclust(normalized[,1:10], G=2) # due to lower RAM
+summary(Clustering_mbased1)
+```
+
+We can conclude that 3 components is better that 2 components.
+
+## Comparison of different clustering techniques.
+
+For comparison, we used the avearge silhouette width.
+
+The average distance of to points in the cluster to which it was assigned, and is the average distance of to the points in the nearest cluster to which it was not assigned.
+
+
+For K-Means:
+
+```{r}
+fviz_nbclust(normalized, kmeans, method = "silhouette")
+```
+
+Above plot, suggest that the optimal silhouette width is achieved in 2 clusters using K-means clustering.
+
+For Heirarchical Clustering:
+
+```{r}
+plot_heir <- fviz_nbclust(normalized, FUN = hcut, method = "silhouette", 
+                   k.max = 10) +
+  ggtitle("(B) Silhouette method")
+plot_heir
+```
+
+Same with K-means, above plot suggest also that in order to obtain optimal silhouette width of  approximately 0.33, cluster k=2.
+
+For Model-based:
+_No silhouette plot available in model based._
+
+```{r}
+plot(Clustering_mbased, "density")
+```
+
+
+```{r}
+cs = cluster.stats(dist(normalized[,1:10]), Clustering_mbased$classification)
+cs[c("avg.silwidth")]
+```
+
+For model-based the average silhouette width is approximately 0.21.
+
+
+
+Thus, we can say that when  coponents are considered the model-based prefroemd better but if 2 cluster component were considered the other two is much better.
